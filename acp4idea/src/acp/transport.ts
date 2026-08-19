@@ -28,6 +28,20 @@ export class RemoteRpcError extends Error {
   }
 }
 
+/**
+ * Raised by a local request handler to answer with a specific JSON-RPC error
+ * code (e.g. -32602 InvalidParams for a bad modeId) instead of the generic
+ * -32603 InternalError the transport otherwise uses for thrown handlers.
+ */
+export class RpcRequestError extends Error {
+  readonly code: number;
+  constructor(code: number, message: string) {
+    super(message);
+    this.name = "RpcRequestError";
+    this.code = code;
+  }
+}
+
 type RequestHandler = (params: unknown) => Promise<unknown> | unknown;
 type NotificationHandler = (method: string, params: unknown) => void;
 type CloseHandler = () => void;
@@ -169,8 +183,9 @@ export class StdioRpc {
       const result = await handler(request.params);
       this.send({ jsonrpc: JSONRPC, id: request.id, result: result === undefined ? null : result });
     } catch (error) {
+      const code = error instanceof RpcRequestError ? error.code : ErrorCode.InternalError;
       const normalized = error instanceof Error ? error.message : String(error);
-      this.sendError(request.id, ErrorCode.InternalError, normalized);
+      this.sendError(request.id, code, normalized);
     }
   }
 

@@ -26,6 +26,10 @@ import {
   type SessionNewResult,
   type SessionPromptParams,
   type SessionPromptResult,
+  type SessionSetConfigOptionParams,
+  type SessionSetConfigOptionResult,
+  type SessionSetModeParams,
+  type SessionSetModelParams,
   type SessionStopParams,
   type SessionUpdate,
   type TerminalCreateParams,
@@ -165,10 +169,14 @@ export class AcpServer implements UpdateSink {
     this.transport.onRequest(ClientMethod.SessionStop, (params) =>
       this.track(this.handleSessionStop(params as SessionStopParams)));
 
-    // No-op mode/model switches: this server exposes neither, so accept and
-    // ignore rather than fail a client that probes them unconditionally.
-    this.transport.onRequest(ClientMethod.SessionSetMode, () => ({}));
-    this.transport.onRequest(ClientMethod.SessionSetModel, () => ({}));
+    // Execution mode (dsh agent presets) and model selection are real: a
+    // client that probes them gets working handlers, not silent no-ops.
+    this.transport.onRequest(ClientMethod.SessionSetMode, (params) =>
+      this.track(this.handleSessionSetMode(params as SessionSetModeParams)));
+    this.transport.onRequest(ClientMethod.SessionSetConfigOption, (params) =>
+      this.track(this.handleSessionSetConfigOption(params as SessionSetConfigOptionParams)));
+    this.transport.onRequest(ClientMethod.SessionSetModel, (params) =>
+      this.track(this.handleSessionSetModel(params as SessionSetModelParams)));
 
     this.transport.onNotification((method, params) => this.handleNotification(method, params));
   }
@@ -190,7 +198,10 @@ export class AcpServer implements UpdateSink {
       throw new Error("cwd must be an absolute path: " + params.cwd);
     }
     const sessionId = await this.bridge.createSession(params.cwd);
-    return { sessionId };
+    // Advertise modes + config options; failures are contained by the bridge,
+    // so the session itself still works even when enumeration is sparse.
+    const { modes, configOptions } = await this.bridge.getSessionConfig(sessionId);
+    return { sessionId, modes, configOptions };
   }
 
   private async handleSessionPrompt(params: SessionPromptParams): Promise<SessionPromptResult> {
@@ -201,6 +212,27 @@ export class AcpServer implements UpdateSink {
 
   private async handleSessionStop(params: SessionStopParams): Promise<Record<string, never>> {
     await this.bridge.stop(params.sessionId);
+    return {};
+  }
+
+  private async handleSessionSetMode(params: SessionSetModeParams): Promise<Record<string, never>> {
+    await this.bridge.setMode(params.sessionId, params.modeId);
+    return {};
+  }
+
+  private async handleSessionSetConfigOption(
+    params: SessionSetConfigOptionParams,
+  ): Promise<SessionSetConfigOptionResult> {
+    const configOptions = await this.bridge.setConfigOption(
+      params.sessionId,
+      params.configId,
+      params.value,
+    );
+    return { configOptions };
+  }
+
+  private async handleSessionSetModel(params: SessionSetModelParams): Promise<Record<string, never>> {
+    await this.bridge.setModel(params.sessionId, params.modelId);
     return {};
   }
 

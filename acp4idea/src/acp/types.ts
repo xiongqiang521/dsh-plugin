@@ -180,7 +180,85 @@ export interface SessionNewParams {
 /** 'session/new' result. */
 export interface SessionNewResult {
   sessionId: string;
+  /** Initial mode state, when the deployment exposes agent presets. */
+  modes?: SessionModeState | null;
+  /** Initial session configuration options (model / thought level). */
+  configOptions?: SessionConfigOption[] | null;
 }
+
+/** A mode the agent can operate in (mapped to a dsh agent preset). */
+export interface SessionMode {
+  /** Stable identifier used to refer to this mode in later messages. */
+  id: string;
+  /** Human-readable name shown for this mode. */
+  name: string;
+  /** Optional human-readable details shown with this mode. */
+  description?: string | null;
+}
+
+/** The set of modes and the one currently active. */
+export interface SessionModeState {
+  /** The current mode the agent is in. */
+  currentModeId: string;
+  /** The set of modes the agent can operate in. */
+  availableModes: SessionMode[];
+}
+
+/** Semantic category for a session configuration option (UX only). */
+export type SessionConfigOptionCategory =
+  | "mode"
+  | "model"
+  | "model_config"
+  | "thought_level"
+  | string;
+
+/** A possible value for a session configuration option. */
+export interface SessionConfigSelectOption {
+  value: string;
+  name: string;
+  description?: string | null;
+}
+
+/** A group of possible values for a session configuration option. */
+export interface SessionConfigSelectGroup {
+  group: string;
+  name: string;
+  options: SessionConfigSelectOption[];
+}
+
+/** Possible values for a session configuration option. */
+export type SessionConfigSelectOptions =
+  | SessionConfigSelectOption[]
+  | SessionConfigSelectGroup[];
+
+/** A single-value selector (dropdown) session configuration option payload. */
+export interface SessionConfigSelect {
+  /** The currently selected value. */
+  currentValue: string;
+  /** The set of selectable options. */
+  options: SessionConfigSelectOptions;
+}
+
+/** A boolean on/off toggle session configuration option payload. */
+export interface SessionConfigBoolean {
+  /** The current value of the boolean option. */
+  currentValue: boolean;
+}
+
+/** A session configuration option selector and its current state. */
+export type SessionConfigOption = {
+  /** Unique identifier for the configuration option. */
+  id: string;
+  /** Human-readable label for the option. */
+  name: string;
+  /** Optional description for the client to display to the user. */
+  description?: string | null;
+  /** Optional semantic category for this option (UX only). */
+  category?: SessionConfigOptionCategory | null;
+} & (
+  | ({ type: "select" } & SessionConfigSelect)
+  | ({ type: "boolean" } & SessionConfigBoolean)
+);
 
 /** 'session/load' request params (client -> agent). */
 export interface SessionLoadParams {
@@ -212,11 +290,32 @@ export interface SessionSetModeParams {
   modeId: string;
 }
 
-/** 'session/set_model' request params (client -> agent). */
+/** 'session/set_mode' result. */
+export type SessionSetModeResult = Record<string, never>;
+
+/** 'session/set_config_option' request params (client -> agent). */
+export interface SessionSetConfigOptionParams {
+  sessionId: string;
+  configId: string;
+  /** Select value id, or boolean value for boolean options. */
+  value: string | boolean;
+  type?: "boolean";
+}
+
+/** 'session/set_config_option' result. */
+export interface SessionSetConfigOptionResult {
+  /** The full set of configuration options and their current values. */
+  configOptions: SessionConfigOption[];
+}
+
+/** 'session/set_model' request params (client -> agent; legacy/UNSTABLE surface). */
 export interface SessionSetModelParams {
   sessionId: string;
   modelId: string;
 }
+
+/** 'session/set_model' result. */
+export type SessionSetModelResult = Record<string, never>;
 
 // ---------------------------------------------------------------------------
 // Prompt content (client -> agent)
@@ -424,16 +523,17 @@ export interface AvailableCommandsUpdate {
   availableCommands: AvailableCommand[];
 }
 
-/** The active session mode changed. */
+/** The active session mode changed (canonical field: currentModeId). */
 export interface CurrentModeUpdate {
   sessionUpdate: "current_mode_update";
-  sessionMode: string;
+  currentModeId: string;
 }
 
-/** The active model changed. */
-export interface CurrentModelUpdate {
-  sessionUpdate: "current_model_update";
-  modelId: string;
+/** Session configuration options have been updated. */
+export interface ConfigOptionUpdate {
+  sessionUpdate: "config_option_update";
+  /** The full set of configuration options and their current values. */
+  configOptions: SessionConfigOption[];
 }
 
 /** A client permission-state change the agent notifies the client about. */
@@ -479,7 +579,7 @@ export type SessionUpdate =
   | ToolCallStatusUpdate
   | AvailableCommandsUpdate
   | CurrentModeUpdate
-  | CurrentModelUpdate
+  | ConfigOptionUpdate
   | ClientPermissionsUpdate
   | SessionInfoUpdate
   | UsageUpdate;
@@ -597,6 +697,7 @@ export const ClientMethod = {
   SessionStop: "session/stop",
   SessionCancel: "session/cancel",
   SessionSetMode: "session/set_mode",
+  SessionSetConfigOption: "session/set_config_option",
   SessionSetModel: "session/set_model",
 } as const;
 

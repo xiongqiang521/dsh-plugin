@@ -58,6 +58,29 @@ completed -> end_turn，aborted -> cancelled，max-tokens -> max_tokens，其余
 并发的 session/prompt 调用按会话 FIFO 排队，客户端会收到队列位置提示；
 session/cancel 会清空排队中的 prompt 并取消正在运行的回合。
 
+## 执行模式与模型选择
+
+ACP 的会话模式与模型选择器适配到 dsh 自身的概念：
+
+- **模式 = dsh agent preset**（`ctx.agentPresets`）。`session/new` 把 preset 名单
+  作为 `modes` 通告（id/name/description 取自各 preset 的元数据）。
+  `session/set_mode` 通过 `recompose` 把会话重链到另一个 preset —— 仅在会话尚未
+  产生任何对话内容时允许（dsh 的换装安全规则），之后会以 `InvalidParams` 拒绝。
+  切换成功会发 `current_mode_update`。本 bundle 自己挂载
+  `@deepseek-ai/dsh-agent-presets`（dsh-base 不挂，只有 Web app 挂），所以
+  headless/stdio profile 也能拿到模式列表。
+- **模型选择器** = `session/set_config_option("model", "<provider>/<model>")`。
+  `session/new` 通过 `ctx.llm.listProviders()` / `listModels()` 枚举所有已注册
+  provider 的模型。切换更新会话的可变 `ModelSelectionRef`（由
+  `installModelSelection` 安装），从下一个模型 step 生效。当前选择始终出现在
+  列表里，即使其路由没有活跃目录。
+- **推理档位** = `session/set_config_option("thought_level", "<effort>")`，
+  由 `resolveModelInfo` 返回的当前模型 reasoning efforts 驱动。
+- **兼容入口**：保留 `session/set_model` 作为模型切换的别名（响应为空，刷新后的
+  选项经 `config_option_update` 送达）。
+- 每次切换都会返回/通知刷新后的完整 `configOptions`；`usage_update` 报告的
+  `size` 在 adapter 披露时使用所选模型的真实 context window（`resolveModelInfo`）。
+
 ## 线格式说明
 
 本服务端发出的消息遵循官方 ACP schema（`@agentclientprotocol/sdk`）：
@@ -99,6 +122,14 @@ acp4idea 是一个 dsh *bundle*（它声明了 dsh.bundle.patch）。创建一�
 ```sh
 # 创建 ~/.dsh/profiles/acp（含 dsh-base），然后加入本 bundle
 dsh plugin --profile acp add @deepseek-ai/dsh-acp4idea
+```
+
+本 bundle 会自行挂载 `@deepseek-ai/dsh-agent-presets`（用于 ACP 模式）。如果你的
+profile 用 `autoInstallPeers: false`（生成 profile 的 pnpm 默认），需要手动安装一次
+peer：
+
+```sh
+cd ~/.dsh/profiles/acp && pnpm add @deepseek-ai/dsh-agent-presets
 ```
 
 随后 ACP 服务端由以下命令启动：

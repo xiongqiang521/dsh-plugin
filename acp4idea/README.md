@@ -60,6 +60,33 @@ Concurrent session/prompt calls are queued FIFO per session; the client is told
 the queue position, and session/cancel clears queued prompts and cancels the
 running turn.
 
+## Execution modes and model selection
+
+ACP's session modes and model selector are adapted to dsh's own concepts:
+
+- **Modes = dsh agent presets** (`ctx.agentPresets`). `session/new` advertises
+  the preset roster as `modes` (id/name/description from each preset's
+  metadata). `session/set_mode` re-links the session to another preset via
+  `recompose` — valid only while the session has produced no conversation
+  content, which is dsh's swap-safety rule; afterwards it is refused with
+  `InvalidParams`. A successful switch emits `current_mode_update`. The bundle
+  mounts `@deepseek-ai/dsh-agent-presets` itself (dsh-base does not), so a
+  headless/stdio profile gets modes even without the Web app.
+- **Model selector** = `session/set_config_option("model", "<provider>/<model>")`.
+  `session/new` enumerates every registered provider's models via
+  `ctx.llm.listProviders()` / `listModels()`. A switch updates the session's
+  mutable `ModelSelectionRef` (installed by `installModelSelection`), so it
+  takes effect from the next model step. The current selection is always
+  surfaced, even when its route has no live catalog.
+- **Thought level** = `session/set_config_option("thought_level", "<effort>")`,
+  driven by the selected model's reasoning efforts from `resolveModelInfo`.
+- **Legacy surface**: `session/set_model` is kept as a compatibility alias for
+  the model switch (response is empty; the refreshed options arrive via
+  `config_option_update`).
+- Every switch returns/notifies the full refreshed `configOptions`, and the
+  reported `usage_update` uses the selected model's real context window from
+  `resolveModelInfo` when the adapter discloses one.
+
 ## Wire-shape notes
 
 The messages this server emits follow the canonical ACP schema
@@ -102,6 +129,14 @@ profile whose bundle stack is dsh-base + acp4idea:
 ```sh
 # creates ~/.dsh/profiles/acp with dsh-base, then adds this bundle
 dsh plugin --profile acp add @deepseek-ai/dsh-acp4idea
+```
+
+The bundle mounts `@deepseek-ai/dsh-agent-presets` itself (for ACP modes). If
+your profile uses `autoInstallPeers: false` (the pnpm default in generated
+profiles), install the peer explicitly once:
+
+```sh
+cd ~/.dsh/profiles/acp && pnpm add @deepseek-ai/dsh-agent-presets
 ```
 
 Then the ACP server is launched by:

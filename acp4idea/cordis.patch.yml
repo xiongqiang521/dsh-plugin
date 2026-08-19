@@ -24,6 +24,16 @@
     - id: code-runtime
       name: '@deepseek-ai/dsh-code-runtime-worker-thread'
 
+    # The preset roster: ACP session modes are dsh agent presets. dsh-base does
+    # not mount this service (only the Web app does), so a headless/stdio
+    # profile would otherwise expose no modes. `default` names the preset used
+    # when the client opens a session without one; the user's settings.yaml
+    # `agent-presets.default` overrides it live.
+    - id: agent-presets
+      name: '@deepseek-ai/dsh-agent-presets'
+      config:
+        default: standard
+
     # The ACP server: reads/writes JSON-RPC over stdio and drives agents.
     # Its config is empty; every tunable rides the same dsh-base / agent-preset
     # stack the other surfaces share.
