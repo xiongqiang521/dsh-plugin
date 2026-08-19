@@ -10,11 +10,14 @@
  *
  * @module acp4idea/acp/server
  */
+import { createRequire } from "node:module";
+import { isAbsolute } from "node:path";
 import {
   ClientMethod,
   AgentNotificationMethod,
   AgentRequestMethod,
   type AgentCapabilities,
+  type Implementation,
   type InitializeParams,
   type InitializeResult,
   type ReadTextFileParams,
@@ -35,7 +38,8 @@ import {
   type PromptContentBlock,
 } from "./types.js";
 import { StdioRpc } from "./transport.js";
-import type { DshAgentBridge, UpdateSink } from "../bridge/dsh-agent-bridge.js";
+import type { DshAgentBridge } from "../bridge/dsh-agent-bridge.js";
+import type { UpdateSink } from "./session-update-pump.js";
 
 /** Advertised agent capabilities: local tools, no session resume, text-only. */
 const AGENT_CAPABILITIES: AgentCapabilities = {
@@ -47,6 +51,21 @@ const AGENT_CAPABILITIES: AgentCapabilities = {
 };
 
 const PROTOCOL_VERSION = 1;
+
+/** Agent identity reported on initialize (name/title/version). */
+function readAgentInfo(): Implementation {
+  try {
+    const require = createRequire(import.meta.url);
+    const pkg = require("../../package.json") as { name?: string; version?: string };
+    return {
+      name: pkg.name ?? "@deepseek-ai/dsh-acp4idea",
+      title: "dsh ACP adapter",
+      version: pkg.version ?? "0.0.0",
+    };
+  } catch {
+    return { name: "@deepseek-ai/dsh-acp4idea", title: "dsh ACP adapter", version: "0.0.0" };
+  }
+}
 
 /** Flatten ACP prompt content blocks into one plain-text prompt. */
 function promptToText(blocks: PromptContentBlock[]): string {
@@ -155,16 +174,21 @@ export class AcpServer implements UpdateSink {
   }
 
   private handleInitialize(params: InitializeParams): InitializeResult {
-    // Advertise our version; a client that cannot match it aborts the handshake.
-    void params;
+    // Advertise the requested version when we support it, otherwise our own —
+    // the client disconnects if it cannot match the negotiated version.
+    const requested = params.protocolVersion;
     return {
-      protocolVersion: PROTOCOL_VERSION,
+      protocolVersion: requested === PROTOCOL_VERSION ? requested : PROTOCOL_VERSION,
       agentCapabilities: AGENT_CAPABILITIES,
       authMethods: [],
+      agentInfo: readAgentInfo(),
     };
   }
 
   private async handleSessionNew(params: SessionNewParams): Promise<SessionNewResult> {
+    if (!isAbsolute(params.cwd)) {
+      throw new Error("cwd must be an absolute path: " + params.cwd);
+    }
     const sessionId = await this.bridge.createSession(params.cwd);
     return { sessionId };
   }

@@ -16,9 +16,12 @@
  *                    terminal/release
  *
  * The canonical machine-readable schema lives in the
- * 'agentclientprotocol/agent-client-protocol' repository; this module pins the
- * subset an ACP v1 agent server implements. Field and enum names follow the
- * published spec so a client-side validator can check messages against it.
+ * 'agentclientprotocol/agent-client-protocol' repository (published as
+ * @agentclientprotocol/sdk); this module pins the subset an ACP v1 agent
+ * server implements. Field and enum names follow the published spec so a
+ * client-side validator can check messages against it — in particular the
+ * plain-string `ToolCallStatus`, the fixed `ToolKind` vocabulary, and the
+ * `content: ToolCallContent[]` shape of tool updates.
  *
  * @module acp4idea/acp/types
  */
@@ -127,6 +130,16 @@ export interface AuthMethod {
   [key: string]: unknown;
 }
 
+/** Agent identity sent back on initialize (name/title/version). */
+export interface Implementation {
+  /** Programmatic name, also used as display fallback. */
+  name: string;
+  /** Human-readable display title. */
+  title?: string;
+  /** Version string (e.g. "0.2.0"). */
+  version: string;
+}
+
 /** 'initialize' request params (client -> agent). */
 export interface InitializeParams {
   protocolVersion: number;
@@ -138,6 +151,7 @@ export interface InitializeResult {
   protocolVersion: number;
   agentCapabilities: AgentCapabilities;
   authMethods?: AuthMethod[];
+  agentInfo?: Implementation;
 }
 
 /** 'authenticate' request params (client -> agent). */
@@ -274,47 +288,101 @@ export interface SessionPromptResult {
 // Session updates (agent -> client notifications)
 // ---------------------------------------------------------------------------
 
-/** A content block the agent streams back to the client. */
+/** A text block the agent streams back to the client. */
 export interface AgentTextBlock {
   type: "text";
   text: string;
 }
 
-/** A thinking/reasoning block the agent streams back to the client. */
+/**
+ * ACP has no native 'thinking' content-block variant — reasoning deltas are
+ * carried in a plain text block inside an agent_thought_chunk update (the same
+ * choice pi-acp makes; JetBrains' kotlinx.serialization rejects unknown
+ * variants).
+ */
 export interface AgentThinkingBlock {
-  type: "thinking";
+  type: "text";
   text: string;
 }
 
-/** Content an agent streams in message/thought updates. */
+/** Content an agent streams in message/thought updates (a SINGLE block per spec). */
 export type AgentContentBlock = AgentTextBlock | AgentThinkingBlock;
 
-/** Status of one tool call as reported to the client. */
-export type ToolCallStatus =
-  | { value: "in_progress" }
-  | { value: "completed" }
-  | { value: "failed"; error: string };
+/**
+ * Execution status of a tool call. A plain string per the canonical ACP schema
+ * (NOT an object wrapper).
+ */
+export type ToolCallStatus = "pending" | "in_progress" | "completed" | "failed";
 
-/** A tool call surfaced to the client. */
+/**
+ * Categories of tools that can be invoked — the canonical ACP vocabulary.
+ * Clients use these to pick icons and grouping.
+ */
+export type ToolKind =
+  | "read"
+  | "edit"
+  | "delete"
+  | "move"
+  | "search"
+  | "execute"
+  | "think"
+  | "fetch"
+  | "switch_mode"
+  | "other";
+
+/** Structured content produced by a tool call (canonical ACP shape). */
+export type ToolCallContent =
+  | {
+      type: "content";
+      content: AgentContentBlock;
+    }
+  | {
+      type: "diff";
+      path: string;
+      oldText: string | null;
+      newText: string;
+    }
+  | {
+      type: "terminal";
+      terminalId: string;
+      title?: string;
+    };
+
+/** One file location a tool call touches. */
+export interface ToolCallLocation {
+  path: string;
+  line?: number;
+  lineCount?: number;
+}
+
+/** A tool call surfaced to the client (sessionUpdate: "tool_call"). */
 export interface ToolCallUpdate {
   sessionUpdate: "tool_call";
   toolCallId: string;
   title: string;
-  /** Coarse classification; editors use it for icon/grouping. */
-  kind: "use" | "edit" | "fetch" | "custom";
+  kind: ToolKind;
   status: ToolCallStatus;
-  /** Human-readable summary (arguments or result), when available. */
-  content?: string;
-  /** Optional file locations the call touches. */
-  locations?: { path: string }[];
+  /** Raw (typically JSON) tool arguments, when available. */
+  rawInput?: unknown;
+  locations?: ToolCallLocation[];
+  /** Structured content produced by the call, when available. */
+  content?: ToolCallContent[];
+  /** Opaque meta payload reserved for agent/client extensions. */
+  _meta?: Record<string, unknown>;
 }
 
-/** A change to a previously surfaced tool call. */
+/** A change to a previously surfaced tool call (sessionUpdate: "tool_call_update"). */
 export interface ToolCallStatusUpdate {
   sessionUpdate: "tool_call_update";
   toolCallId: string;
-  status: ToolCallStatus;
-  content?: string;
+  status?: ToolCallStatus;
+  kind?: ToolKind;
+  title?: string;
+  content?: ToolCallContent[];
+  rawInput?: unknown;
+  rawOutput?: unknown;
+  locations?: ToolCallLocation[];
+  _meta?: Record<string, unknown>;
 }
 
 /** One entry in a plan/todo update. */
@@ -350,10 +418,10 @@ export interface AvailableCommand {
   input?: unknown;
 }
 
-/** The list of available commands changed. */
+/** The list of available commands changed (canonical field: availableCommands). */
 export interface AvailableCommandsUpdate {
   sessionUpdate: "available_commands_update";
-  commands: AvailableCommand[];
+  availableCommands: AvailableCommand[];
 }
 
 /** The active session mode changed. */
@@ -374,6 +442,34 @@ export interface ClientPermissionsUpdate {
   permissions: unknown;
 }
 
+/** Update to session metadata (title / last-activity timestamp). */
+export interface SessionInfoUpdate {
+  sessionUpdate: "session_info_update";
+  /** Human-readable session title; null clears it. */
+  title?: string | null;
+  /** ISO 8601 timestamp of last activity. */
+  updatedAt?: string | null;
+}
+
+/** Cost information for a session. */
+export interface Cost {
+  /** Total cumulative cost, in `currency` units. */
+  amount: number;
+  /** ISO 4217 currency code (e.g. "USD"). */
+  currency: string;
+}
+
+/** Context-window usage and cost update for a session. */
+export interface UsageUpdate {
+  sessionUpdate: "usage_update";
+  /** Tokens currently in context. */
+  used: number;
+  /** Total context window size in tokens. */
+  size: number;
+  /** Cumulative session cost, when known. */
+  cost?: Cost;
+}
+
 /** Discriminated union of session updates. */
 export type SessionUpdate =
   | AgentMessageChunkUpdate
@@ -384,7 +480,9 @@ export type SessionUpdate =
   | AvailableCommandsUpdate
   | CurrentModeUpdate
   | CurrentModelUpdate
-  | ClientPermissionsUpdate;
+  | ClientPermissionsUpdate
+  | SessionInfoUpdate
+  | UsageUpdate;
 
 /** 'session/update' notification params (agent -> client). */
 export interface SessionUpdateParams {

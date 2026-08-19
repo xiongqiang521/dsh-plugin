@@ -13,6 +13,7 @@ import type { Context } from "@deepseek-ai/cordis";
 import z from "@deepseek-ai/schemastery";
 import { StdioRpc } from "./acp/transport.js";
 import { AcpServer } from "./acp/server.js";
+import { parseSessionUpdateMode } from "./acp/session-update-pump.js";
 import { DshAgentBridge } from "./bridge/dsh-agent-bridge.js";
 
 /** Stable Cordis plugin name. */
@@ -21,14 +22,25 @@ export const name = "acp4idea";
 /** Core services required before the stdio server can start. */
 export const inject = ["agents", "agentDefaultModel", "sessions"];
 
-/** Plugin config. agentPreset is optional (no .required()). */
+/**
+ * Plugin config. agentPreset is optional (no .required()).
+ *
+ * - sessionUpdateMode: "coalesced" (default) batches streamed message/thought
+ *   deltas before sending ACP notifications; "legacy" sends every delta as its
+ *   own notification (diagnostic / A/B baseline).
+ * - contextWindow: context-window size (tokens) advertised in ACP usage_update.
+ */
 export const Config = z.object({
   agentPreset: z.string(),
+  sessionUpdateMode: z.string(),
+  contextWindow: z.number(),
 });
 
-/** The config shape apply reads (agentPreset may be absent at runtime). */
+/** The config shape apply reads (optional fields may be absent at runtime). */
 export interface Acp4IdeaConfig {
   agentPreset?: string;
+  sessionUpdateMode?: string;
+  contextWindow?: number;
 }
 
 /**
@@ -51,6 +63,8 @@ export function apply(ctx: Context, config: Acp4IdeaConfig): void {
 
   const bridge = new DshAgentBridge(ctx, {
     agentPreset: config.agentPreset || undefined,
+    sessionUpdateMode: parseSessionUpdateMode(config.sessionUpdateMode || undefined),
+    contextWindow: config.contextWindow,
   });
 
   // The server owns the transport and registers the client-facing methods.
