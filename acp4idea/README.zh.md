@@ -9,6 +9,10 @@ stdio 驱动它。
 - 每个 ACP 会话对应一个真实的 dsh Agent，通过 dsh-headless 所用的同一个核心
   注册表（ctx.agents）创建，并以 session/update 事件流式回传给 IDE。
 
+适配器设计参考了 [svkozak/pi-acp](https://github.com/svkozak/pi-acp)：流式增量在
+到达客户端前先合并，按会话累计 token 用量并上报，prompt 回合显式排队且支持取消，
+线上消息形状与官方 ACP schema 一致。
+
 ## 架构
 
 ```
@@ -17,19 +21,21 @@ IDEA (ACP client)
    v
 bin/acp4idea.js ---> dsh --profile acp
                       |
-                      +-- src/acp/transport.ts         组帧 + JSON-RPC 分发
-                      +-- src/acp/server.ts            initialize / session/* 处理器
-                      +-- src/bridge/dsh-agent-bridge.ts  ctx.agents 工厂
-                      +-- src/bridge/event-map.ts         session 事件 -> ACP 更新
+                      +-- src/acp/transport.ts           组帧 + JSON-RPC 分发
+                      +-- src/acp/server.ts              initialize / session/* 处理器
+                      +-- src/acp/session-update-pump.ts 流式增量合并投递（25ms / 8KiB）
+                      +-- src/bridge/dsh-agent-bridge.ts ctx.agents 工厂、排队、用量
+                      +-- src/bridge/event-map.ts        session 事件 -> ACP ops
 ```
 
 | 层 | 文件 | 职责 |
 |----|------|------|
 | 传输 | src/acp/transport.ts | stdio 上的 JSON-RPC 2.0，请求/响应关联 |
-| 协议类型 | src/acp/types.ts | ACP v1 线格式类型 + 方法名常量 |
+| 协议类型 | src/acp/types.ts | ACP v1 线格式类型 + 方法名常量（官方 schema 形状） |
 | 服务端 | src/acp/server.ts | initialize、session/new、session/prompt、session/stop、session/cancel、session/update |
-| Agent 桥接 | src/bridge/dsh-agent-bridge.ts | 每个 ACP 会话对应一个 dsh Agent（ctx.agents） |
-| 事件映射 | src/bridge/event-map.ts | dsh session 事件 -> ACP session 更新 |
+| 更新泵 | src/acp/session-update-pump.ts | 合并流式增量（25ms / 8KiB）、FIFO 排序屏障、完成后 flush |
+| Agent 桥接 | src/bridge/dsh-agent-bridge.ts | 每个 ACP 会话对应一个 dsh Agent（ctx.agents）；prompt 排队、用量、元数据 |
+| 事件映射 | src/bridge/event-map.ts | dsh session 事件 -> ACP ops（纯函数） |
 | 插件入口 | src/index.ts | Cordis 插件：name / inject / apply / Config |
 | Bundle patch | cordis.patch.yml | 把插件挂载到 dsh-base 之上（headless 风格） |
 
@@ -37,20 +43,52 @@ bin/acp4idea.js ---> dsh --profile acp
 
 | dsh session 事件 | ACP session/update |
 |------------------|--------------------|
-| assistant/message（文本） | agent_message_chunk |
-| assistant/message（推理） | agent_thought_chunk |
-| tool/call | tool_call（in_progress） |
-| tool/result | tool_call_update（completed / failed） |
+| assistant/chunk（text-delta） | agent_message_chunk（合并后） |
+| assistant/chunk（reasoning-delta） | agent_thought_chunk（合并后） |
+| assistant/message（组装消息） | 仅当该 step 没有流式 chunk 时才回退发文本；用量始终累计 |
+| tool/call | tool_call（in_progress，规范 ToolKind） |
+| tool/result | tool_call_update（completed / failed，content 数组 + rawOutput） |
 | todo/write | plan |
+| 回合完成 | usage_update（累计 tokens）+ session_info_update（updatedAt） |
+| 首个 prompt | session_info_update（派生的标题） |
 
 停止原因由 turn/end 的 reason 折算：
 completed -> end_turn，aborted -> cancelled，max-tokens -> max_tokens，其余 -> end_turn。
+
+并发的 session/prompt 调用按会话 FIFO 排队，客户端会收到队列位置提示；
+session/cancel 会清空排队中的 prompt 并取消正在运行的回合。
+
+## 线格式说明
+
+本服务端发出的消息遵循官方 ACP schema（`@agentclientprotocol/sdk`）：
+
+- `tool_call` / `tool_call_update` 使用纯字符串 `ToolCallStatus`
+  （`pending` / `in_progress` / `completed` / `failed`）和固定 `ToolKind`
+  词表（`read` / `edit` / `delete` / `move` / `search` / `execute` /
+  `think` / `fetch` / `switch_mode` / `other`）。
+- 工具输出以 `content: ToolCallContent[]` 数组 + `rawOutput` 原始字符串交付，
+  而不是裸字符串字段。
+- `available_commands_update` 携带 `availableCommands`。
+- `initialize` 返回 `agentInfo`（name / title / version），并协商协议版本
+  （支持请求版本则返回之，否则返回自身版本）。
+- `session/new` 拒绝非绝对路径的 `cwd`。
+
+## 配置
+
+bundle 配置项：
+
+| 键 | 默认值 | 作用 |
+|----|--------|------|
+| `agentPreset` | — | 附加到创建会话的持久 agent preset |
+| `sessionUpdateMode` | `coalesced` | `coalesced` 将流式消息/推理增量最多按 25ms 或 8KiB 合并；`legacy` 每个增量单独发一条通知（诊断基线） |
+| `contextWindow` | `131072` | ACP `usage_update` 中通告的上下文窗口大小（tokens） |
 
 ## 构建
 
 ```sh
 pnpm install
 pnpm build   # tsc -> lib/
+pnpm test    # pump + event-map 单元测试，然后是 stdio smoke 测试
 ```
 
 ## 安装到 dsh
@@ -112,3 +150,5 @@ transport/server 中实现为带类型的辅助方法，但尚未接入 dsh 的�
 - Agent Client Protocol：https://agentclientprotocol.com
 - JetBrains ACP：https://www.jetbrains.com/help/ai-assistant/acp.html
 - dsh-headless（本 bundle 对齐的一次性驱动示例）：@deepseek-ai/dsh-headless
+- pi-acp（本 bundle 借鉴其流式合并/排队设计的 ACP 适配器）：
+  https://github.com/svkozak/pi-acp

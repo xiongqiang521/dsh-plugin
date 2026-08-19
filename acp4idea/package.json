@@ -63,6 +63,6 @@
     "build": "tsc -p tsconfig.json",
     "watch": "tsc -p tsconfig.json --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node test/smoke.mjs"
+    "test": "node test/session-update-pump.test.mjs && node test/event-map.test.mjs && node test/smoke.mjs"
   }
 }

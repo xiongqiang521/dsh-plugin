@@ -9,6 +9,11 @@ client can drive over stdio.
 - Each ACP session is a real dsh Agent, created through the same core registry
   that dsh-headless uses, and streamed back to the IDE as session/update events.
 
+The adapter design follows [svkozak/pi-acp](https://github.com/svkozak/pi-acp):
+streamed deltas are coalesced before they reach the client, per-session token
+usage is reported, prompt turns are queued with explicit cancellation, and the
+wire shapes match the canonical ACP schema.
+
 ## Architecture
 
 ```
@@ -17,19 +22,21 @@ IDEA (ACP client)
    v
 bin/acp4idea.js ---> dsh --profile acp
                       |
-                      +-- src/acp/transport.ts         framing + JSON-RPC dispatch
-                      +-- src/acp/server.ts            initialize / session/* handlers
-                      +-- src/bridge/dsh-agent-bridge.ts  ctx.agents factory
-                      +-- src/bridge/event-map.ts         session events -> ACP updates
+                      +-- src/acp/transport.ts            framing + JSON-RPC dispatch
+                      +-- src/acp/server.ts               initialize / session/* handlers
+                      +-- src/acp/session-update-pump.ts  coalesced stream delivery (25ms / 8KiB)
+                      +-- src/bridge/dsh-agent-bridge.ts  ctx.agents factory, queue, usage
+                      +-- src/bridge/event-map.ts         session events -> ACP ops
 ```
 
 | Layer | File | Role |
 |-------|------|------|
 | Transport | src/acp/transport.ts | JSON-RPC 2.0 over stdio, request/response correlation |
-| Protocol types | src/acp/types.ts | ACP v1 wire types + method-name constants |
+| Protocol types | src/acp/types.ts | ACP v1 wire types + method-name constants (canonical schema shapes) |
 | Server | src/acp/server.ts | initialize, session/new, session/prompt, session/stop, session/cancel, session/update |
-| Agent bridge | src/bridge/dsh-agent-bridge.ts | one dsh Agent per ACP session via ctx.agents |
-| Event map | src/bridge/event-map.ts | dsh session events -> ACP session updates |
+| Update pump | src/acp/session-update-pump.ts | coalesces stream deltas (25 ms / 8 KiB), FIFO ordering barriers, flush-on-completion |
+| Agent bridge | src/bridge/dsh-agent-bridge.ts | one dsh Agent per ACP session via ctx.agents; prompt queue, usage, metadata |
+| Event map | src/bridge/event-map.ts | dsh session events -> ACP ops (pure) |
 | Plugin entry | src/index.ts | Cordis plugin: name / inject / apply / Config |
 | Bundle patch | cordis.patch.yml | mounts the plugin over dsh-base (headless-style) |
 
@@ -37,20 +44,54 @@ bin/acp4idea.js ---> dsh --profile acp
 
 | dsh session event | ACP session/update |
 |-------------------|--------------------|
-| assistant/message (text) | agent_message_chunk |
-| assistant/message (reasoning) | agent_thought_chunk |
-| tool/call | tool_call (in_progress) |
-| tool/result | tool_call_update (completed / failed) |
+| assistant/chunk (text-delta) | agent_message_chunk (coalesced) |
+| assistant/chunk (reasoning-delta) | agent_thought_chunk (coalesced) |
+| assistant/message (assembled) | fallback text only when the step had no streamed chunks; usage is always accumulated |
+| tool/call | tool_call (in_progress, canonical ToolKind) |
+| tool/result | tool_call_update (completed / failed, content array + rawOutput) |
 | todo/write | plan |
+| turn completion | usage_update (cumulative tokens) + session_info_update (updatedAt) |
+| first prompt | session_info_update (derived title) |
 
 Stop reasons fold from the turn/end reason:
 completed -> end_turn, aborted -> cancelled, max-tokens -> max_tokens, else end_turn.
+
+Concurrent session/prompt calls are queued FIFO per session; the client is told
+the queue position, and session/cancel clears queued prompts and cancels the
+running turn.
+
+## Wire-shape notes
+
+The messages this server emits follow the canonical ACP schema
+(`@agentclientprotocol/sdk`):
+
+- `tool_call` / `tool_call_update` use the plain-string `ToolCallStatus`
+  (`pending` / `in_progress` / `completed` / `failed`) and the fixed
+  `ToolKind` vocabulary (`read` / `edit` / `delete` / `move` / `search` /
+  `execute` / `think` / `fetch` / `switch_mode` / `other`).
+- Tool output is delivered as `content: ToolCallContent[]` plus the raw string
+  in `rawOutput` — not a bare string field.
+- `available_commands_update` carries `availableCommands`.
+- `initialize` returns `agentInfo` (name / title / version) and negotiates the
+  protocol version (requested when supported, otherwise the agent's own).
+- `session/new` rejects non-absolute `cwd`.
+
+## Configuration
+
+The bundle config accepts:
+
+| Key | Default | Effect |
+|-----|---------|--------|
+| `agentPreset` | — | Durable agent preset attached to created sessions |
+| `sessionUpdateMode` | `coalesced` | `coalesced` batches streamed message/thought deltas for at most 25 ms or 8 KiB; `legacy` sends every delta as its own notification (diagnostic baseline) |
+| `contextWindow` | `131072` | Context-window size (tokens) advertised in ACP `usage_update` |
 
 ## Build
 
 ```sh
 pnpm install
 pnpm build   # tsc -> lib/
+pnpm test    # pump + event-map unit tests, then the stdio smoke test
 ```
 
 ## Install into dsh
@@ -104,14 +145,18 @@ Notes:
 ## Scope and extension points
 
 The first release runs dsh tools locally (bash / pwsh / fs on the dsh host) and
-streams the full transcript to the IDE. The ACP client-side delegation surface
-(fs/read_text_file, fs/write_text_file, terminal/*) is implemented in the
-transport/server as typed helpers but not yet wired to dsh's tool executor; a
-future tool-interception layer can route dsh tool calls through the IDE so edits
-and terminals render natively.
+streams the full transcript to the IDE — token deltas coalesced into fluent
+chunks, tool calls with canonical shapes, per-turn usage, and a derived session
+title. The ACP client-side delegation surface (fs/read_text_file,
+fs/write_text_file, terminal/*) is implemented in the transport/server as
+typed helpers but not yet wired to dsh's tool executor; a future
+tool-interception layer can route dsh tool calls through the IDE so edits and
+terminals render natively.
 
 ## References
 
 - Agent Client Protocol: https://agentclientprotocol.com
 - JetBrains ACP: https://www.jetbrains.com/help/ai-assistant/acp.html
 - dsh-headless (the one-shot analog this bundle mirrors): @deepseek-ai/dsh-headless
+- pi-acp (ACP adapter whose streaming/queueing design this bundle adapts):
+  https://github.com/svkozak/pi-acp
