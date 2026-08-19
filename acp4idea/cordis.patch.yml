@@ -1,0 +1,31 @@
+# The acp4idea bundle patch: an Agent Client Protocol (ACP) v1 server riding
+# directly over dsh-base, with no Host, HTTP server, Web runtime, or browser
+# layer. The mounted plugin opens a long-lived stdio process that IntelliJ IDEA
+# (JetBrains AI Assistant), Zed, or any other ACP v1 client launches; it speaks
+# JSON-RPC 2.0 over stdin/stdout and drives dsh Agents through the core Agent
+# registry (ctx.agents), exactly like dsh-headless does for one-shot tasks.
+#
+# See README.md for how IDEA is pointed at this profile (dsh --profile acp).
+
+# The coding persona, shadowed per agent from its own route/workspace.
+- id: system-prompt
+  config:
+    persona: >-
+      You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.
+
+# A stdio server is not a watched dev surface; the shared HMR row stays off.
+- id: hmr
+  disabled: true
+
+- insert:
+    # Code Mode is a core execution capability, not a Web component. Without it
+    # an agent composed from the `code` preset fails to mount (its
+    # tool-presentation row waits for codeRuntime). Same as dsh-headless.
+    - id: code-runtime
+      name: '@deepseek-ai/dsh-code-runtime-worker-thread'
+
+    # The ACP server: reads/writes JSON-RPC over stdio and drives agents.
+    # Its config is empty; every tunable rides the same dsh-base / agent-preset
+    # stack the other surfaces share.
+    - id: acp-server
+      name: '@deepseek-ai/dsh-acp4idea'
