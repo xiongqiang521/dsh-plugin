@@ -57,7 +57,7 @@ try {
   // 1) initialize
   const init = await request("initialize", { protocolVersion: 1, clientCapabilities: {} });
   assert.equal(init.protocolVersion, 1);
-  assert.equal(init.agentInfo.name, "@deepseek-ai/dsh-acp4idea");
+  assert.equal(init.agentInfo.name, "@xiongqiang521/dsh-acp4idea");
   console.log("[1] initialize OK, agentInfo:", init.agentInfo.name, init.agentInfo.version);
 
   // 2) session/new -> modes + configOptions

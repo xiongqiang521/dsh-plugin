@@ -187,7 +187,7 @@ const init = await client.request("initialize", {
 assert.equal(init.protocolVersion, 1);
 assert.equal(init.agentCapabilities.loadSession, false);
 assert.deepEqual(init.authMethods, []);
-assert.equal(init.agentInfo.name, "@deepseek-ai/dsh-acp4idea");
+assert.equal(init.agentInfo.name, "@xiongqiang521/dsh-acp4idea");
 assert.ok(typeof init.agentInfo.version === "string" && init.agentInfo.version.length > 0);
 
 // 2) session/new requires an absolute cwd

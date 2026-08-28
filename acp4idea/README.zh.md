@@ -121,7 +121,7 @@ acp4idea 是一个 dsh *bundle*（它声明了 dsh.bundle.patch）。创建一�
 
 ```sh
 # 创建 ~/.dsh/profiles/acp（含 dsh-base），然后加入本 bundle
-dsh plugin --profile acp add @deepseek-ai/dsh-acp4idea
+dsh plugin --profile acp add @xiongqiang521/dsh-acp4idea
 ```
 
 本 bundle 会自行挂载 `@deepseek-ai/dsh-agent-presets`（用于 ACP 模式）。如果你的

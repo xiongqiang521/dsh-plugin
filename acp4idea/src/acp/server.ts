@@ -62,12 +62,12 @@ function readAgentInfo(): Implementation {
     const require = createRequire(import.meta.url);
     const pkg = require("../../package.json") as { name?: string; version?: string };
     return {
-      name: pkg.name ?? "@deepseek-ai/dsh-acp4idea",
+      name: pkg.name ?? "@xiongqiang521/dsh-acp4idea",
       title: "dsh ACP adapter",
       version: pkg.version ?? "0.0.0",
     };
   } catch {
-    return { name: "@deepseek-ai/dsh-acp4idea", title: "dsh ACP adapter", version: "0.0.0" };
+    return { name: "@xiongqiang521/dsh-acp4idea", title: "dsh ACP adapter", version: "0.0.0" };
   }
 }
 

@@ -38,4 +38,4 @@
     # Its config is empty; every tunable rides the same dsh-base / agent-preset
     # stack the other surfaces share.
     - id: acp-server
-      name: '@deepseek-ai/dsh-acp4idea'
+      name: '@xiongqiang521/dsh-acp4idea'

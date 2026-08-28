@@ -7,7 +7,7 @@
  * created through the core registry — the same factory dsh-headless uses, but
  * interactive and streamed.
  *
- * @module @deepseek-ai/dsh-acp4idea
+ * @module @xiongqiang521/dsh-acp4idea
  */
 import type { Context } from "@deepseek-ai/cordis";
 import z from "@deepseek-ai/schemastery";

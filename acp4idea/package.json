@@ -1,5 +1,5 @@
 {
-  "name": "@deepseek-ai/dsh-acp4idea",
+  "name": "@xiongqiang521/dsh-acp4idea",
   "description": "ACP (Agent Client Protocol) v1 server bundle for dsh — drive DeepSeek Harness agents from IntelliJ IDEA, Zed, and any ACP v1 client over stdio",
   "version": "0.1.0",
   "publishConfig": {

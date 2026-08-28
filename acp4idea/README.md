@@ -128,7 +128,7 @@ profile whose bundle stack is dsh-base + acp4idea:
 
 ```sh
 # creates ~/.dsh/profiles/acp with dsh-base, then adds this bundle
-dsh plugin --profile acp add @deepseek-ai/dsh-acp4idea
+dsh plugin --profile acp add @xiongqiang521/dsh-acp4idea
 ```
 
 The bundle mounts `@deepseek-ai/dsh-agent-presets` itself (for ACP modes). If
