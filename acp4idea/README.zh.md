@@ -24,7 +24,8 @@ bin/acp4idea.js ---> dsh --profile acp
                       +-- src/acp/transport.ts           组帧 + JSON-RPC 分发
                       +-- src/acp/server.ts              initialize / session/* 处理器
                       +-- src/acp/session-update-pump.ts 流式增量合并投递（25ms / 8KiB）
-                      +-- src/bridge/dsh-agent-bridge.ts ctx.agents 工厂、排队、用量
+                      +-- src/acp/permission.ts          审批请求构造 + 结果折算
+                      +-- src/bridge/dsh-agent-bridge.ts ctx.agents 工厂、排队、用量、审批应答
                       +-- src/bridge/event-map.ts        session 事件 -> ACP ops
 ```
 
@@ -32,9 +33,10 @@ bin/acp4idea.js ---> dsh --profile acp
 |----|------|------|
 | 传输 | src/acp/transport.ts | stdio 上的 JSON-RPC 2.0，请求/响应关联 |
 | 协议类型 | src/acp/types.ts | ACP v1 线格式类型 + 方法名常量（官方 schema 形状） |
-| 服务端 | src/acp/server.ts | initialize、session/new、session/prompt、session/stop、session/cancel、session/update |
+| 服务端 | src/acp/server.ts | initialize、session/new、session/prompt、session/stop、session/cancel、session/update；agent → client 请求（含 session/request_permission） |
 | 更新泵 | src/acp/session-update-pump.ts | 合并流式增量（25ms / 8KiB）、FIFO 排序屏障、完成后 flush |
-| Agent 桥接 | src/bridge/dsh-agent-bridge.ts | 每个 ACP 会话对应一个 dsh Agent（ctx.agents）；prompt 排队、用量、元数据 |
+| 权限助手 | src/acp/permission.ts | 构造 session/request_permission 载荷、把决定折算进 dsh 结果词表（纯函数） |
+| Agent 桥接 | src/bridge/dsh-agent-bridge.ts | 每个 ACP 会话对应一个 dsh Agent（ctx.agents）；prompt 排队、用量、元数据、审批应答者 |
 | 事件映射 | src/bridge/event-map.ts | dsh session 事件 -> ACP ops（纯函数） |
 | 插件入口 | src/index.ts | Cordis 插件：name / inject / apply / Config |
 | Bundle patch | cordis.patch.yml | 把插件挂载到 dsh-base 之上（headless 风格） |
@@ -57,6 +59,9 @@ completed -> end_turn，aborted -> cancelled，max-tokens -> max_tokens，其余
 
 并发的 session/prompt 调用按会话 FIFO 排队，客户端会收到队列位置提示；
 session/cancel 会清空排队中的 prompt 并取消正在运行的回合。
+
+工具需要审批时，桥接层通过 `session/request_permission` 向 IDE 请求一次性
+决定，而不是直接拒绝关闭（见下节 [审批通道](#审批通道权限)）。
 
 ## 执行模式与模型选择
 
@@ -95,6 +100,32 @@ ACP 的会话模式与模型选择器适配到 dsh 自身的概念：
 - `initialize` 返回 `agentInfo`（name / title / version），并协商协议版本
   （支持请求版本则返回之，否则返回自身版本）。
 - `session/new` 拒绝非绝对路径的 `cwd`。
+
+## 审批通道（权限）
+
+dsh 的工具流水线在执行敏感操作（如沙箱升权）前，会通过 `approval/request`
+审批 seam（`ctx.approval`，@deepseek-ai/dsh-user-approval）请求一次性人工
+审批。headless/stdio profile 没有 Web UI 应答，因此若 bundle 不提供应答者，
+每次询问都会以拒绝方式关闭，报 "no approval channel is available"（审批
+通道不可用）。
+
+本 bundle 就是它负责的会话的应答者：流水线发起询问时，它会向 IDE 发送 ACP
+`session/request_permission` 请求（客户端把对话框绑定到已经以 session/update
+流式送达的 `tool_call` 上），再把客户端的决定折算回 dsh 的封闭结果词表：
+
+| ACP 结果 | dsh 结果 |
+|----------|----------|
+| `selected` + `allow_once` | `allowed-once`（唯一的授权） |
+| `selected` + `reject_once` | `rejected` |
+| `cancelled` | `cancelled` |
+| 其它（传输失败、未知选项） | `unavailable`（拒绝关闭） |
+
+只通告一次性选项（`allow_once` / `reject_once`）——dsh 的 seam 最多只授权
+一次动作，不会记住规则。询问方的 `reason` 放在请求的 `_meta.reason` 里
+（v1 没有顶层 reason 字段）。没有工具调用 id 可关联的审批询问会通过
+waterfall 的 `next()` 委托给其它已组合的应答者。要求 profile 组合了
+`@deepseek-ai/dsh-user-approval`（dsh-base 已挂载）；没有它时监听器不生效，
+工具流水线退回到历史的不询问即拒绝路径。
 
 ## 配置
 
@@ -171,10 +202,13 @@ acp4idea    # bin/acp4idea.js
 
 ## 范围与扩展点
 
-首个版本在 dsh 本机本地运行工具（bash / pwsh / fs），并把完整对话流式回传给 IDE。
-ACP 的客户端委托面（fs/read_text_file、fs/write_text_file、terminal/*）已在
-transport/server 中实现为带类型的辅助方法，但尚未接入 dsh 的工具执行器；后续的
-工具拦截层可以把 dsh 的工具调用路由到 IDE，从而让编辑与终端在 IDE 中原生呈现。
+首个版本在 dsh 本机本地运行工具（bash / pwsh / fs），并把完整对话流式回传给 IDE：
+令牌增量合并为流畅的 chunk、规范形状的工具调用、每回合用量、派生的会话标题，
+以及可用的审批通道（工具审批询问会在 IDE 中原生呈现，决定按一次性语义生效）。
+ACP 的其余客户端委托面（fs/read_text_file、fs/write_text_file、terminal/*）
+已在 transport/server 中实现为带类型的辅助方法，但尚未接入 dsh 的工具执行器；
+后续的工具拦截层可以把 dsh 的工具调用路由到 IDE，从而让编辑与终端在 IDE 中
+原生呈现。
 
 ## 参考
 

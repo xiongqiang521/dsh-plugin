@@ -50,7 +50,6 @@
     "@deepseek-ai/dsh-session": "^0.1.0-rc.6"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/cordis-plugin-loader": "^1.0.2",
     "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
@@ -58,12 +57,16 @@
     "@deepseek-ai/dsh-code-runtime-worker-thread": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-session": "^0.1.0-rc.6",
-    "typescript": "^5.6.0"
+    "@types/node": "^22.0.0",
+    "eslint": "^10.9.1",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.68.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "watch": "tsc -p tsconfig.json --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node test/session-update-pump.test.mjs && node test/event-map.test.mjs && node test/smoke.mjs"
+    "lint": "eslint . --max-warnings 0",
+    "test": "node test/session-update-pump.test.mjs && node test/event-map.test.mjs && node test/permission-map.test.mjs && node test/smoke.mjs"
   }
 }

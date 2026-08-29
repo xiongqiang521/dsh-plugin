@@ -49,7 +49,7 @@ const DEFAULT_MAX_BUFFERED_BYTES = 8 * 1024;
 export function parseSessionUpdateMode(value: string | undefined): SessionUpdateMode {
   if (value === undefined || value === "coalesced") return "coalesced";
   if (value === "legacy") return "legacy";
-  throw new Error('ACP4IDEA_SESSION_UPDATE_MODE must be "coalesced" or "legacy"');
+  throw new Error('invalid sessionUpdateMode "' + value + '" (expected "coalesced" or "legacy")');
 }
 
 /** The wire sink the pump delivers finished updates to. */

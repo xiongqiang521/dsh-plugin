@@ -5,7 +5,8 @@
  * lifecycle, pump-driven streaming (coalesced), queued prompts + cancel,
  * execution-mode switching (session/set_mode), model selection
  * (session/set_config_option + legacy session/set_model), usage_update /
- * session_info_update, agent->client requests, and JSON-RPC error handling.
+ * session_info_update, agent->client requests (fs + session/request_permission),
+ * and JSON-RPC error handling.
  */
 import { PassThrough } from "node:stream";
 import assert from "node:assert/strict";
@@ -289,18 +290,49 @@ const fsResult = await acpServer.readTextFile({ sessionId: sid, path: "C:\\proj\
 assert.equal(fsResult.content, "# hi");
 assert.equal(fsResult.totalLines, 1);
 
-// 14) session/stop + session/cancel (notification, no response)
+// 14) agent -> client permission request round trip (session/request_permission)
+client.onRequest("session/request_permission", (params) => {
+  assert.equal(params.sessionId, sid);
+  assert.equal(params.toolCall.toolCallId, "call-1");
+  assert.equal(params.toolCall.kind, "execute");
+  assert.equal(params.toolCall.status, "in_progress");
+  assert.deepEqual(
+    params.options.map((o) => [o.optionId, o.kind]),
+    [
+      ["allow_once", "allow_once"],
+      ["reject_once", "reject_once"],
+    ],
+  );
+  return { outcome: { outcome: "selected", optionId: "allow_once" } };
+});
+const permResult = await acpServer.requestPermission({
+  sessionId: sid,
+  toolCall: {
+    sessionUpdate: "tool_call",
+    toolCallId: "call-1",
+    title: "bash",
+    kind: "execute",
+    status: "in_progress",
+  },
+  options: [
+    { optionId: "allow_once", name: "Allow once", kind: "allow_once" },
+    { optionId: "reject_once", name: "Reject once", kind: "reject_once" },
+  ],
+});
+assert.deepEqual(permResult.outcome, { outcome: "selected", optionId: "allow_once" });
+
+// 15) session/stop + session/cancel (notification, no response)
 const stop = await client.request("session/stop", { sessionId: sid });
 assert.deepEqual(stop, {});
 client.notify("session/cancel", { sessionId: sid });
 
-// 15) unknown method -> JSON-RPC MethodNotFound (-32601)
+// 16) unknown method -> JSON-RPC MethodNotFound (-32601)
 await assert.rejects(client.request("no/such/method"), (err) => {
   assert.equal(err.code, -32601);
   return true;
 });
 
-// 16) unknown session -> internal error
+// 17) unknown session -> internal error
 await assert.rejects(
   client.request("session/prompt", { sessionId: "nope", prompt: [] }),
   /unknown session/,

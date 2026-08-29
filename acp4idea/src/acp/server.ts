@@ -5,8 +5,9 @@
  * The server implements the client-facing methods (initialize, session/*) and
  * forwards every durable agent event to the client as a session/update
  * notification. It also exposes the agent -> client request surface
- * (fs/read_text_file, fs/write_text_file, terminal/*) as typed helpers, so a
- * future tool-interception layer can delegate file/terminal work to the IDE.
+ * (fs/read_text_file, fs/write_text_file, terminal/*, session/request_permission)
+ * as typed helpers, so approval asks and a future tool-interception layer can
+ * delegate file/terminal work to the IDE.
  *
  * @module acp4idea/acp/server
  */
@@ -16,6 +17,7 @@ import {
   ClientMethod,
   AgentNotificationMethod,
   AgentRequestMethod,
+  ErrorCode,
   type AgentCapabilities,
   type Implementation,
   type InitializeParams,
@@ -40,8 +42,10 @@ import {
   type WriteTextFileParams,
   type WriteTextFileResult,
   type PromptContentBlock,
+  type RequestPermissionParams,
+  type RequestPermissionResult,
 } from "./types.js";
-import { StdioRpc } from "./transport.js";
+import { RpcRequestError, type StdioRpc } from "./transport.js";
 import type { DshAgentBridge } from "../bridge/dsh-agent-bridge.js";
 import type { UpdateSink } from "./session-update-pump.js";
 
@@ -104,6 +108,10 @@ export class AcpServer implements UpdateSink {
     this.transport = transport;
     this.bridge = bridge;
     bridge.setSink(this);
+    // The bridge answers dsh's approval seam by asking this server (and thus
+    // the IDE client) for a one-shot decision. Optional call keeps the smoke
+    // test's minimal mock bridge working without the approval surface.
+    bridge.setPermissionChannel?.(this);
     this.registerHandlers();
   }
 
@@ -155,6 +163,18 @@ export class AcpServer implements UpdateSink {
     return this.transport.request(AgentRequestMethod.TerminalKill, params);
   }
 
+  /**
+   * Ask the client for a one-shot permission decision (ACP
+   * session/request_permission). The bridge's approval answerer uses this to
+   * surface dsh approval asks in the IDE.
+   */
+  requestPermission(params: RequestPermissionParams): Promise<RequestPermissionResult> {
+    return this.transport.request<RequestPermissionResult>(
+      AgentRequestMethod.RequestPermission,
+      params,
+    );
+  }
+
   // -------------------------------------------------------------------------
   // Client -> agent handlers
   // -------------------------------------------------------------------------
@@ -184,7 +204,7 @@ export class AcpServer implements UpdateSink {
   private handleInitialize(params: InitializeParams): InitializeResult {
     // Advertise the requested version when we support it, otherwise our own —
     // the client disconnects if it cannot match the negotiated version.
-    const requested = params.protocolVersion;
+    const requested = params?.protocolVersion;
     return {
       protocolVersion: requested === PROTOCOL_VERSION ? requested : PROTOCOL_VERSION,
       agentCapabilities: AGENT_CAPABILITIES,
@@ -195,7 +215,7 @@ export class AcpServer implements UpdateSink {
 
   private async handleSessionNew(params: SessionNewParams): Promise<SessionNewResult> {
     if (!isAbsolute(params.cwd)) {
-      throw new Error("cwd must be an absolute path: " + params.cwd);
+      throw new RpcRequestError(ErrorCode.InvalidParams, "cwd must be an absolute path: " + params.cwd);
     }
     const sessionId = await this.bridge.createSession(params.cwd);
     // Advertise modes + config options; failures are contained by the bridge,

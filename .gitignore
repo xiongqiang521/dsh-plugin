@@ -1,7 +1,5 @@
 node_modules/
-lib/
+.pnpm-store/
 *.log
 .DS_Store
 .idea/
-.npm-tmp
-.npm-cache

@@ -1,0 +1,6 @@
+# dsh-plugins monorepo: every plugin under this root is a workspace member,
+# so a single `pnpm install` at the root installs all plugin dependencies.
+packages:
+  - "*"
+  - "!node_modules"
+  - "!**/node_modules"

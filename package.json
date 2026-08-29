@@ -1,0 +1,20 @@
+{
+  "name": "dsh-plugins",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Root project for the dsh plugin collection under this directory — one command installs every plugin into your dsh profiles.",
+  "type": "module",
+  "scripts": {
+    "install:plugins": "node scripts/plugins.mjs install",
+    "install:all": "pnpm install && node scripts/plugins.mjs install",
+    "plugins:list": "node scripts/plugins.mjs list",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=9"
+  }
+}

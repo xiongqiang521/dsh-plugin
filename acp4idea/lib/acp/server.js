@@ -1,0 +1,192 @@
+/**
+ * ACP v1 agent server: session lifecycle + capability negotiation over the
+ * stdio transport, delegating actual agent work to a DshAgentBridge.
+ *
+ * The server implements the client-facing methods (initialize, session/*) and
+ * forwards every durable agent event to the client as a session/update
+ * notification. It also exposes the agent -> client request surface
+ * (fs/read_text_file, fs/write_text_file, terminal/*, session/request_permission)
+ * as typed helpers, so approval asks and a future tool-interception layer can
+ * delegate file/terminal work to the IDE.
+ *
+ * @module acp4idea/acp/server
+ */
+import { createRequire } from "node:module";
+import { isAbsolute } from "node:path";
+import { ClientMethod, AgentNotificationMethod, AgentRequestMethod, ErrorCode, } from "./types.js";
+import { RpcRequestError } from "./transport.js";
+/** Advertised agent capabilities: local tools, no session resume, text-only. */
+const AGENT_CAPABILITIES = {
+    loadSession: false,
+    promptCapabilities: {
+        image: false,
+        embeddedContext: false,
+    },
+};
+const PROTOCOL_VERSION = 1;
+/** Agent identity reported on initialize (name/title/version). */
+function readAgentInfo() {
+    try {
+        const require = createRequire(import.meta.url);
+        const pkg = require("../../package.json");
+        return {
+            name: pkg.name ?? "@xiongqiang521/dsh-acp4idea",
+            title: "dsh ACP adapter",
+            version: pkg.version ?? "0.0.0",
+        };
+    }
+    catch {
+        return { name: "@xiongqiang521/dsh-acp4idea", title: "dsh ACP adapter", version: "0.0.0" };
+    }
+}
+/** Flatten ACP prompt content blocks into one plain-text prompt. */
+function promptToText(blocks) {
+    const parts = [];
+    for (const block of blocks) {
+        switch (block.type) {
+            case "text":
+                parts.push(block.text);
+                break;
+            case "resource":
+                parts.push(block.resource.text);
+                break;
+            case "resource_link":
+                parts.push("[resource: " + (block.name ?? block.uri) + "]");
+                break;
+            case "image":
+                // Images are dropped for v1: dsh image input requires the attachment
+                // service, which a headless ACP profile does not compose.
+                parts.push("[image omitted]");
+                break;
+        }
+    }
+    return parts.join("\n").trim();
+}
+export class AcpServer {
+    transport;
+    bridge;
+    active = new Set();
+    constructor(transport, bridge) {
+        this.transport = transport;
+        this.bridge = bridge;
+        bridge.setSink(this);
+        // The bridge answers dsh's approval seam by asking this server (and thus
+        // the IDE client) for a one-shot decision. Optional call keeps the smoke
+        // test's minimal mock bridge working without the approval surface.
+        bridge.setPermissionChannel?.(this);
+        this.registerHandlers();
+    }
+    /** Register an in-flight handler so drain() can wait for it. */
+    track(task) {
+        this.active.add(task);
+        void task
+            .then(() => this.active.delete(task), () => this.active.delete(task));
+        return task;
+    }
+    /**
+     * Wait for every in-flight client request to settle. Used on transport close
+     * (stdin EOF) so a slow request such as session/new (agent creation) is not
+     * torn down mid-flight before the process exits.
+     */
+    async drain() {
+        while (this.active.size > 0) {
+            await Promise.allSettled([...this.active]);
+        }
+    }
+    /** UpdateSink: stream one agent update to the client. */
+    sendUpdate(sessionId, update) {
+        this.transport.notify(AgentNotificationMethod.SessionUpdate, { sessionId, update });
+    }
+    // -------------------------------------------------------------------------
+    // Agent -> client request helpers (available for future fs/terminal delegation)
+    // -------------------------------------------------------------------------
+    readTextFile(params) {
+        return this.transport.request(AgentRequestMethod.ReadTextFile, params);
+    }
+    writeTextFile(params) {
+        return this.transport.request(AgentRequestMethod.WriteTextFile, params);
+    }
+    terminalCreate(params) {
+        return this.transport.request(AgentRequestMethod.TerminalCreate, params);
+    }
+    terminalWaitForExit(params) {
+        return this.transport.request(AgentRequestMethod.TerminalWaitForExit, params);
+    }
+    terminalKill(params) {
+        return this.transport.request(AgentRequestMethod.TerminalKill, params);
+    }
+    /**
+     * Ask the client for a one-shot permission decision (ACP
+     * session/request_permission). The bridge's approval answerer uses this to
+     * surface dsh approval asks in the IDE.
+     */
+    requestPermission(params) {
+        return this.transport.request(AgentRequestMethod.RequestPermission, params);
+    }
+    // -------------------------------------------------------------------------
+    // Client -> agent handlers
+    // -------------------------------------------------------------------------
+    registerHandlers() {
+        this.transport.onRequest(ClientMethod.Initialize, (params) => this.handleInitialize(params));
+        this.transport.onRequest(ClientMethod.Authenticate, () => ({}));
+        this.transport.onRequest(ClientMethod.SessionNew, (params) => this.track(this.handleSessionNew(params)));
+        this.transport.onRequest(ClientMethod.SessionPrompt, (params) => this.track(this.handleSessionPrompt(params)));
+        this.transport.onRequest(ClientMethod.SessionStop, (params) => this.track(this.handleSessionStop(params)));
+        // Execution mode (dsh agent presets) and model selection are real: a
+        // client that probes them gets working handlers, not silent no-ops.
+        this.transport.onRequest(ClientMethod.SessionSetMode, (params) => this.track(this.handleSessionSetMode(params)));
+        this.transport.onRequest(ClientMethod.SessionSetConfigOption, (params) => this.track(this.handleSessionSetConfigOption(params)));
+        this.transport.onRequest(ClientMethod.SessionSetModel, (params) => this.track(this.handleSessionSetModel(params)));
+        this.transport.onNotification((method, params) => this.handleNotification(method, params));
+    }
+    handleInitialize(params) {
+        // Advertise the requested version when we support it, otherwise our own —
+        // the client disconnects if it cannot match the negotiated version.
+        const requested = params?.protocolVersion;
+        return {
+            protocolVersion: requested === PROTOCOL_VERSION ? requested : PROTOCOL_VERSION,
+            agentCapabilities: AGENT_CAPABILITIES,
+            authMethods: [],
+            agentInfo: readAgentInfo(),
+        };
+    }
+    async handleSessionNew(params) {
+        if (!isAbsolute(params.cwd)) {
+            throw new RpcRequestError(ErrorCode.InvalidParams, "cwd must be an absolute path: " + params.cwd);
+        }
+        const sessionId = await this.bridge.createSession(params.cwd);
+        // Advertise modes + config options; failures are contained by the bridge,
+        // so the session itself still works even when enumeration is sparse.
+        const { modes, configOptions } = await this.bridge.getSessionConfig(sessionId);
+        return { sessionId, modes, configOptions };
+    }
+    async handleSessionPrompt(params) {
+        const text = promptToText(params.prompt ?? []);
+        const stopReason = await this.bridge.prompt(params.sessionId, text);
+        return { stopReason };
+    }
+    async handleSessionStop(params) {
+        await this.bridge.stop(params.sessionId);
+        return {};
+    }
+    async handleSessionSetMode(params) {
+        await this.bridge.setMode(params.sessionId, params.modeId);
+        return {};
+    }
+    async handleSessionSetConfigOption(params) {
+        const configOptions = await this.bridge.setConfigOption(params.sessionId, params.configId, params.value);
+        return { configOptions };
+    }
+    async handleSessionSetModel(params) {
+        await this.bridge.setModel(params.sessionId, params.modelId);
+        return {};
+    }
+    handleNotification(method, params) {
+        if (method === ClientMethod.SessionCancel) {
+            const sessionId = params?.sessionId;
+            if (sessionId)
+                this.bridge.cancel(sessionId);
+        }
+    }
+}
+//# sourceMappingURL=server.js.map

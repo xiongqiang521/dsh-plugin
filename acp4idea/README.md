@@ -25,7 +25,10 @@ bin/acp4idea.js ---> dsh --profile acp
                       +-- src/acp/transport.ts            framing + JSON-RPC dispatch
                       +-- src/acp/server.ts               initialize / session/* handlers
                       +-- src/acp/session-update-pump.ts  coalesced stream delivery (25ms / 8KiB)
-                      +-- src/bridge/dsh-agent-bridge.ts  ctx.agents factory, queue, usage
+                      +-- src/acp/permission.ts           permission request build + outcome fold
+                      +-- src/acp/tool-kind.ts            dsh tool name -> ACP ToolKind (pure)
+                      +-- src/bridge/dsh-agent-bridge.ts  ctx.agents factory, queue, usage, approval
+                      +-- src/bridge/session-config.ts    modes = agent presets; model/thought catalog
                       +-- src/bridge/event-map.ts         session events -> ACP ops
 ```
 
@@ -33,9 +36,12 @@ bin/acp4idea.js ---> dsh --profile acp
 |-------|------|------|
 | Transport | src/acp/transport.ts | JSON-RPC 2.0 over stdio, request/response correlation |
 | Protocol types | src/acp/types.ts | ACP v1 wire types + method-name constants (canonical schema shapes) |
-| Server | src/acp/server.ts | initialize, session/new, session/prompt, session/stop, session/cancel, session/update |
+| Server | src/acp/server.ts | initialize, session/new, session/prompt, session/stop, session/cancel, session/update; agent -> client requests incl. session/request_permission |
 | Update pump | src/acp/session-update-pump.ts | coalesces stream deltas (25 ms / 8 KiB), FIFO ordering barriers, flush-on-completion |
-| Agent bridge | src/bridge/dsh-agent-bridge.ts | one dsh Agent per ACP session via ctx.agents; prompt queue, usage, metadata |
+| Permission helpers | src/acp/permission.ts | builds session/request_permission payloads, folds decisions into dsh's outcome vocabulary (pure) |
+| Tool-kind classifier | src/acp/tool-kind.ts | maps dsh tool names to the canonical ACP ToolKind vocabulary (pure, shared) |
+| Agent bridge | src/bridge/dsh-agent-bridge.ts | one dsh Agent per ACP session via ctx.agents; prompt queue, usage, metadata, approval answerer |
+| Session config | src/bridge/session-config.ts | ACP modes = agent presets; model/thought-level catalog enumeration + validation |
 | Event map | src/bridge/event-map.ts | dsh session events -> ACP ops (pure) |
 | Plugin entry | src/index.ts | Cordis plugin: name / inject / apply / Config |
 | Bundle patch | cordis.patch.yml | mounts the plugin over dsh-base (headless-style) |
@@ -59,6 +65,10 @@ completed -> end_turn, aborted -> cancelled, max-tokens -> max_tokens, else end_
 Concurrent session/prompt calls are queued FIFO per session; the client is told
 the queue position, and session/cancel clears queued prompts and cancels the
 running turn.
+
+When a tool needs approval, the bridge asks the IDE over
+`session/request_permission` instead of failing closed (see
+[Approval channel](#approval-channel-permissions) below).
 
 ## Execution modes and model selection
 
@@ -103,6 +113,35 @@ The messages this server emits follow the canonical ACP schema
   protocol version (requested when supported, otherwise the agent's own).
 - `session/new` rejects non-absolute `cwd`.
 
+## Approval channel (permissions)
+
+dsh's tool pipeline asks for one-shot human approval through the
+`approval/request` seam (`ctx.approval`, @deepseek-ai/dsh-user-approval) before
+sensitive operations such as sandbox escalation. A headless/stdio profile has
+no Web UI to answer, so — without an answerer — every ask fails closed with
+"no approval channel is available".
+
+The bundle is that answerer for the sessions it owns. When the pipeline asks,
+it sends an ACP `session/request_permission` request to the IDE (the client
+binds the dialog to the `tool_call` already streamed as a session/update), then
+folds the client's one-shot decision back into dsh's closed outcome vocabulary:
+
+| ACP outcome | dsh outcome |
+|-------------|-------------|
+| `selected` + `allow_once` | `allowed-once` (the only grant) |
+| `selected` + `reject_once` | `rejected` |
+| `cancelled` | `cancelled` |
+| anything else (transport failure, unknown option) | `unavailable` (fail closed) |
+
+Only one-shot options (`allow_once` / `reject_once`) are advertised — dsh's
+seam grants at most one action and never remembers rules. The asker's `reason`
+rides in the request's `_meta.reason` (v1 has no top-level reason field).
+Approval asks without a tool-call id to correlate against are delegated to any
+other composed answerer through the waterfall's `next()`. Requires
+`@deepseek-ai/dsh-user-approval` to be composed (dsh-base mounts it); without
+it the listener is inert and the tool pipeline degrades to its historical
+deny-without-asking path.
+
 ## Configuration
 
 The bundle config accepts:
@@ -118,6 +157,7 @@ The bundle config accepts:
 ```sh
 pnpm install
 pnpm build   # tsc -> lib/
+pnpm lint    # eslint — @typescript-eslint recommended + project rules (flat config)
 pnpm test    # pump + event-map unit tests, then the stdio smoke test
 ```
 
@@ -181,12 +221,13 @@ Notes:
 
 The first release runs dsh tools locally (bash / pwsh / fs on the dsh host) and
 streams the full transcript to the IDE — token deltas coalesced into fluent
-chunks, tool calls with canonical shapes, per-turn usage, and a derived session
-title. The ACP client-side delegation surface (fs/read_text_file,
-fs/write_text_file, terminal/*) is implemented in the transport/server as
-typed helpers but not yet wired to dsh's tool executor; a future
-tool-interception layer can route dsh tool calls through the IDE so edits and
-terminals render natively.
+chunks, tool calls with canonical shapes, per-turn usage, a derived session
+title, and a working approval channel (tool approval asks surface in the IDE
+and the decision is applied one-shot). The remaining ACP client-side delegation
+surface (fs/read_text_file, fs/write_text_file, terminal/*) is implemented in
+the transport/server as typed helpers but not yet wired to dsh's tool executor;
+a future tool-interception layer can route dsh tool calls through the IDE so
+edits and terminals render natively.
 
 ## References
 

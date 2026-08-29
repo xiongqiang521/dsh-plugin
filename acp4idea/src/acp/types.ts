@@ -11,7 +11,8 @@
  *
  *   agent (this process)              ->  client:
  *     requests:      fs/read_text_file, fs/write_text_file, terminal/create,
- *                    terminal/wait_for_exit, terminal/kill
+ *                    terminal/wait_for_exit, terminal/kill,
+ *                    session/request_permission
  *     notifications: session/update, fs/update, terminal/output,
  *                    terminal/release
  *
@@ -204,13 +205,12 @@ export interface SessionModeState {
   availableModes: SessionMode[];
 }
 
-/** Semantic category for a session configuration option (UX only). */
-export type SessionConfigOptionCategory =
-  | "mode"
-  | "model"
-  | "model_config"
-  | "thought_level"
-  | string;
+/**
+ * Semantic category for a session configuration option (UX only). Free-form
+ * string on the wire; canonical values used by this server are "model" and
+ * "thought_level".
+ */
+export type SessionConfigOptionCategory = string;
 
 /** A possible value for a session configuration option. */
 export interface SessionConfigSelectOption {
@@ -387,25 +387,21 @@ export interface SessionPromptResult {
 // Session updates (agent -> client notifications)
 // ---------------------------------------------------------------------------
 
-/** A text block the agent streams back to the client. */
+/**
+ * A text block the agent streams back to the client.
+ *
+ * Reasoning deltas reuse the same shape: ACP has no native 'thinking' content
+ * block, so `agent_thought_chunk` carries plain text blocks too (the same
+ * choice pi-acp makes; JetBrains' kotlinx.serialization rejects unknown
+ * variants).
+ */
 export interface AgentTextBlock {
   type: "text";
   text: string;
 }
 
-/**
- * ACP has no native 'thinking' content-block variant — reasoning deltas are
- * carried in a plain text block inside an agent_thought_chunk update (the same
- * choice pi-acp makes; JetBrains' kotlinx.serialization rejects unknown
- * variants).
- */
-export interface AgentThinkingBlock {
-  type: "text";
-  text: string;
-}
-
 /** Content an agent streams in message/thought updates (a SINGLE block per spec). */
-export type AgentContentBlock = AgentTextBlock | AgentThinkingBlock;
+export type AgentContentBlock = AgentTextBlock;
 
 /**
  * Execution status of a tool call. A plain string per the canonical ACP schema
@@ -684,6 +680,56 @@ export interface TerminalReleaseParams {
 }
 
 // ---------------------------------------------------------------------------
+// Permission delegation (agent -> client requests)
+// ---------------------------------------------------------------------------
+
+/**
+ * The nature of a permission option, as the canonical ACP vocabulary defines
+ * it. dsh's approval seam is one-shot, so this server advertises only
+ * `allow_once` / `reject_once` — never the always-variants, which would promise
+ * remembered rules dsh does not have.
+ */
+export type PermissionOptionKind =
+  | "allow_once"
+  | "allow_always"
+  | "reject_once"
+  | "reject_always";
+
+/** One option the user may pick when a permission request is presented. */
+export interface PermissionOption {
+  /** Stable id the response echoes back (e.g. "allow_once"). */
+  optionId: string;
+  /** Human-readable label to display to the user. */
+  name: string;
+  /** Hint about the nature of this option (icon / UI treatment). */
+  kind: PermissionOptionKind;
+}
+
+/** 'session/request_permission' request params (agent -> client). */
+export interface RequestPermissionParams {
+  sessionId: string;
+  /**
+   * The tool call the question attaches to — the same shape already streamed as
+   * a `tool_call` session/update, so the client can bind the dialog to it.
+   */
+  toolCall: ToolCallUpdate;
+  /** Options the client presents to the user. */
+  options: PermissionOption[];
+  /** Opaque extension payload (the asker's reason rides here; see permission.ts). */
+  _meta?: Record<string, unknown>;
+}
+
+/** The user's decision on a permission request. */
+export type RequestPermissionOutcome =
+  | { outcome: "cancelled" }
+  | { outcome: "selected"; optionId: string };
+
+/** 'session/request_permission' result (client -> agent). */
+export interface RequestPermissionResult {
+  outcome: RequestPermissionOutcome;
+}
+
+// ---------------------------------------------------------------------------
 // Method-name constants (kept in one place so dispatch stays greppable)
 // ---------------------------------------------------------------------------
 
@@ -708,6 +754,7 @@ export const AgentRequestMethod = {
   TerminalCreate: "terminal/create",
   TerminalWaitForExit: "terminal/wait_for_exit",
   TerminalKill: "terminal/kill",
+  RequestPermission: "session/request_permission",
 } as const;
 
 /** Agent -> client notification method names. */
